@@ -26,6 +26,19 @@
 #define BUF_SIZE (16 * 1024)
 #define BUF_TIMEOUT 1000
 
+struct supported_dev {
+    const char *name;
+    uint16_t vid;
+    uint16_t pid;
+    int channels;
+    const char *fw_name;
+};
+
+static struct supported_dev supported_devs[] = {
+    { "Logic Pro 8",  0x21a9, 0x1005, 8,  "salaea-logicpro8-fx3.fw"},
+    { "Logic Pro 16", 0x21a9, 0x1006, 16, "saleae-logicpro16-fx3.fw"},
+};
+
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -173,6 +186,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	const char *conn;
 	char connection_id[64];
 	gboolean fw_loaded = FALSE;
+	struct supported_dev *sdev = NULL;
 
 	devices = NULL;
 	conn_devices = NULL;
@@ -192,17 +206,24 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
 	for (unsigned int i = 0; devlist[i]; i++) {
+		int j;
 		libusb_get_device_descriptor(devlist[i], &des);
 
-		if (des.idVendor != 0x21a9 || des.idProduct != 0x1006)
+		for (j = 0; j < ARRAY_SIZE(supported_devs); j++) {
+			if (des.idVendor == supported_devs[j].vid &&
+				des.idProduct == supported_devs[j].pid) {
+				sdev = &supported_devs[j];
+				break;
+			}
+		}
+		if (!sdev)
 			continue;
 
 		if (!scan_firmware(devlist[i])) {
 			const char *fwname;
-			sr_info("Found a Logic Pro 16 device (no firmware loaded).");
-			fwname = "saleae-logicpro16-fx3.fw";
+			sr_info("Found a %s device (no firmware loaded).", sdev->name);
 			if (upload_firmware(drvc->sr_ctx, devlist[i],
-					    fwname) != SR_OK) {
+					    sdev->fw_name) != SR_OK) {
 				sr_err("Firmware upload failed, name %s.", fwname);
 				continue;
 			};
@@ -210,6 +231,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		}
 
 	}
+	if (!sdev)
+		return std_scan_complete(di, devices);
+
 	if (fw_loaded) {
 		/* Give the device some time to come back and scan again */
 		libusb_free_device_list(devlist, 1);
@@ -237,7 +261,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 		libusb_get_device_descriptor(devlist[i], &des);
 
-		if (des.idVendor != 0x21a9 || des.idProduct != 0x1006)
+		if (des.idVendor != sdev->vid || des.idProduct != sdev->vid)
 			continue;
 
 		if (usb_get_port_path(devlist[i], connection_id, sizeof(connection_id)) < 0)
@@ -246,14 +270,14 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi = g_malloc0(sizeof(struct sr_dev_inst));
 		sdi->status = SR_ST_INITIALIZING;
 		sdi->vendor = g_strdup("Saleae");
-		sdi->model = g_strdup("Logic Pro 16");
+		sdi->model = g_strdup(sdev->name);
 		sdi->connection_id = g_strdup(connection_id);
 
-		for (unsigned int j = 0; j < ARRAY_SIZE(channel_names); j++)
+		for (unsigned int j = 0; (j < ARRAY_SIZE(channel_names) && j < sdev->channels); j++)
 			sr_channel_new(sdi, j, SR_CHANNEL_LOGIC, TRUE,
 				       channel_names[j]);
 
-		sr_dbg("Found a Logic Pro 16 device.");
+		sr_dbg("Found a %s device.", sdev->name);
 		sdi->status = SR_ST_INACTIVE;
 		sdi->inst_type = SR_INST_USB;
 		sdi->conn = sr_usb_dev_inst_new(libusb_get_bus_number(devlist[i]),
